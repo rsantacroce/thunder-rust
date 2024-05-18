@@ -1,26 +1,41 @@
 [package]
 name = "thunder"
-version = "0.2.0"
-edition = "2021"
-authors = [ "Nikita Chashchinskii <nikita.chashchinskii@gmail.com>" ]
+authors.workspace = true
+edition.workspace = true
+version.workspace = true
 
 [dependencies]
-bip300301 = { git = "https://github.com/nchashch/bip300301", rev = "cf917605ab1937c57f19f72311f96ac0b4832de0" }
-
+anyhow = { version = "1.0.72", features = ["backtrace"] }
 bincode = "1.3.3"
+bip300301 ={ workspace = true, features = ["tracing"] }
 blake3 = "1.4.1"
+borsh = { version = "1.3.1", features = ["derive"] }
 bs58 = { version = "0.5.0", features = ["check"] }
 byteorder = "1.4.3"
 bytes = "1.4.0"
-ed25519-dalek = { version = "1.0.1", features = ["batch", "serde"] }
-ed25519-dalek-bip32 = "0.2.0"
-heed = { git = "https://github.com/meilisearch/heed", tag = "v0.12.4", version = "0.12.4" }
-hex = "0.4.3"
+ed25519-dalek = { version = "2.1.1", features = ["batch", "serde"] }
+ed25519-dalek-bip32 = "0.3.0"
+fallible-iterator = "0.3.0"
+futures = "0.3.30"
+heed = "0.20.0"
+hex = { version = "0.4.3", features = ["serde"] }
+jsonrpsee = { version = "0.20.0" }
+parking_lot = "0.12.1"
 quinn = "0.10.1"
 rayon = "1.7.0"
 rcgen = "0.11.1"
 rustls = { version = "0.21.5", features = ["dangerous_configuration"] }
+rustreexo = { workspace = true, features = ["with-serde"] }
 serde = { version = "1.0.179", features = ["derive"] }
+serde_json = "1.0.113"
 sha256 = "1.2.2"
 thiserror = "1.0.44"
+tiny-bip39 = "1.0.0"
 tokio = { version = "1.29.1", features = ["sync"] }
+tokio-stream = "0.1.15"
+tokio-util = { version = "0.7.10", features = ["rt"] }
+tracing = "0.1.40"
+
+[lib]
+name = "thunder"
+path = "lib.rs"
