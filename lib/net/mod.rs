@@ -23,6 +23,7 @@ use crate::{
 
 pub mod error;
 mod peer;
+mod peer_management;
 
 pub use error::Error;
 pub(crate) use peer::error::mailbox::Error as PeerConnectionMailboxError;
@@ -36,6 +37,7 @@ pub use peer::{
     PeerStateId, Request as PeerRequest, ResponseMessage as PeerResponse,
     message as peer_message,
 };
+pub use peer_management::{AddrMan, PeerInfo, PeerServices};
 
 /// Dummy certificate verifier that treats any certificate as valid.
 /// NOTE, such verification is vulnerable to MITM attacks, but convenient for testing.
@@ -172,10 +174,13 @@ pub struct Net {
         mpsc::UnboundedSender<(SocketAddr, Option<PeerConnectionInfo>)>,
     known_peers: DatabaseUnique<SerdeBincode<SocketAddr>, Unit>,
     _version: DatabaseUnique<UnitKey, SerdeBincode<Version>>,
+    addrman: Arc<RwLock<AddrMan>>,
 }
 
 impl Net {
     pub const NUM_DBS: u32 = 2;
+    pub const MAX_TRIED_PEERS: usize = 1000;
+    pub const MAX_NEW_PEERS: usize = 1000;
 
     fn add_active_peer(
         &self,
@@ -250,6 +255,10 @@ impl Net {
         if addr.ip().is_unspecified() {
             return Err(Error::UnspecfiedPeerIP(addr.ip()));
         }
+
+        // Mark this as a connection attempt
+        self.mark_peer_attempt(addr, addr);
+
         let connecting = self.server.connect(addr, "localhost")?;
         let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
         self.known_peers
@@ -278,6 +287,10 @@ impl Net {
 
         tracing::trace!("connect peer: adding to active peers");
         self.add_active_peer(addr, connection_handle)?;
+
+        // Mark the peer as successfully connected
+        self.mark_peer_connected(addr, addr);
+
         Ok(())
     }
 
@@ -323,6 +336,12 @@ impl Net {
         }
         rwtxn.commit().map_err(RwTxnError::from)?;
         let (peer_info_tx, peer_info_rx) = mpsc::unbounded();
+        
+        let addrman = Arc::new(RwLock::new(AddrMan::new(
+            Self::MAX_TRIED_PEERS,
+            Self::MAX_NEW_PEERS,
+        )));
+
         let net = Net {
             server,
             archive,
@@ -331,7 +350,18 @@ impl Net {
             peer_info_tx,
             known_peers,
             _version: version,
+            addrman,
         };
+
+        // Add seed node to addrman
+        let seed_addr = SocketAddr::new(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::new(172, 105, 148, 135)),
+            4000 + THIS_SIDECHAIN as u16,
+        );
+        let mut peer_info = PeerInfo::new(seed_addr, seed_addr);
+        peer_info.services.add_service(PeerServices::NETWORK);
+        net.addrman.write().add_peer(peer_info);
+
         #[allow(clippy::let_and_return)]
         let known_peers: Vec<_> = {
             let rotxn = env.read_txn().map_err(EnvError::from)?;
@@ -367,8 +397,6 @@ impl Net {
                 res => res,
             }
         })
-        // TODO: would be better to indicate this in the return error? tbh I want to scrap
-        // the typed error out of here, and just use anyhow
         .inspect_err(|err| {
             tracing::error!("unable to connect to known peers during net construction: {err:#}");
         })?;
@@ -445,7 +473,10 @@ impl Net {
                 }
             }
         });
-        // TODO: is this the right state?
+
+        // Mark the peer as successfully connected
+        self.mark_peer_connected(addr, addr);
+
         self.add_active_peer(addr, connection_handle)?;
         Ok(Some(addr))
     }
@@ -506,5 +537,27 @@ impl Net {
                     tracing::warn!("Failed to push tx {txid} to peer at {addr}")
                 }
             })
+    }
+
+    /// Get a peer to connect to from the address manager
+    pub fn get_peer_to_connect(&self) -> Option<SocketAddr> {
+        self.addrman.read().select_peer()
+    }
+
+    /// Mark a peer as successfully connected
+    pub fn mark_peer_connected(&self, addr: SocketAddr, source: SocketAddr) {
+        let mut addrman = self.addrman.write();
+        let mut peer_info = PeerInfo::new(addr, source);
+        peer_info.is_tried = true;
+        peer_info.update_last_seen();
+        addrman.add_peer(peer_info);
+    }
+
+    /// Mark a peer connection attempt
+    pub fn mark_peer_attempt(&self, addr: SocketAddr, source: SocketAddr) {
+        let mut addrman = self.addrman.write();
+        let mut peer_info = PeerInfo::new(addr, source);
+        peer_info.update_last_try();
+        addrman.add_peer(peer_info);
     }
 }
