@@ -6,6 +6,7 @@ use futures::{FutureExt, future::BoxFuture};
 
 use crate::{
     ibd::ibd_trial,
+    p2p::p2p_trial,
     setup::{Init, PostSetup},
     unknown_withdrawal::unknown_withdrawal_trial,
     util::BinPaths,
@@ -31,6 +32,7 @@ pub fn tests(
     vec![
         deposit_withdraw_roundtrip(bin_paths.clone()),
         ibd_trial(bin_paths.clone()),
-        unknown_withdrawal_trial(bin_paths),
+        unknown_withdrawal_trial(bin_paths.clone()),
+        p2p_trial(bin_paths.clone()),
     ]
 }
