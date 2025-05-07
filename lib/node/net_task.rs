@@ -22,6 +22,7 @@ use sneed::{DbError, EnvError, RwTxn, RwTxnError, db};
 use thiserror::Error;
 use tokio::task::{self, JoinHandle};
 use tokio_stream::StreamNotifyClose;
+use tokio::sync::{mpsc, broadcast};
 
 use super::mainchain_task::{self, MainchainTaskHandle};
 use crate::{
@@ -38,6 +39,8 @@ use crate::{
         proto::{self, mainchain},
     },
     util::join_set,
+    net::peer::message::{Request, ResponseMessage},
+    net::peer_management::AddrMan,
 };
 
 #[allow(clippy::duplicated_attributes)]
@@ -75,6 +78,8 @@ pub enum Error {
     SendReorgResultOneshot,
     #[error("state error")]
     State(#[from] state::Error),
+    #[error("invalid response")]
+    InvalidResponse,
 }
 
 impl From<net::Error> for Error {
@@ -404,14 +409,12 @@ fn reorg_to_tip(
     Ok(true)
 }
 
-#[derive(Clone)]
-struct NetTaskContext {
-    env: sneed::Env,
-    archive: Archive,
-    mainchain_task: MainchainTaskHandle,
-    mempool: MemPool,
-    net: Net,
-    state: State,
+pub struct NetTaskContext {
+    pub env: Arc<sneed::Env>,
+    pub net: Arc<Net>,
+    pub state: Arc<State>,
+    pub archive: Arc<Archive>,
+    pub mempool: Arc<MemPool>,
 }
 
 /// Message indicating a tip that is ready to reorg to, with the address of the
@@ -423,37 +426,31 @@ struct NetTaskContext {
 type NewTipReadyMessage =
     (Tip, Option<SocketAddr>, Option<oneshot::Sender<bool>>);
 
-struct NetTask {
-    ctxt: NetTaskContext,
-    /// Receive a request to forward to the mainchain task, with the address of
-    /// the peer connection that caused the request, and the peer state ID of
-    /// the request
-    forward_mainchain_task_request_rx:
-        UnboundedReceiver<(mainchain_task::Request, SocketAddr, PeerStateId)>,
-    /// Push a request to forward to the mainchain task, with the address of
-    /// the peer connection that caused the request, and the peer state ID of
-    /// the request
-    forward_mainchain_task_request_tx:
-        UnboundedSender<(mainchain_task::Request, SocketAddr, PeerStateId)>,
-    mainchain_task_response_rx: UnboundedReceiver<mainchain_task::Response>,
-    /// Receive a tip that is ready to reorg to, with the address of the peer
-    /// connection that caused the request, if it originated from a peer.
-    /// If the request originates from this node, then the socket address is
-    /// None.
-    /// An optional oneshot sender can be used receive the result of attempting
-    /// to reorg to the new tip, on the corresponding oneshot receiver.
-    new_tip_ready_rx: UnboundedReceiver<NewTipReadyMessage>,
-    /// Push a tip that is ready to reorg to, with the address of the peer
-    /// connection that caused the request, if it originated from a peer.
-    /// If the request originates from this node, then the socket address is
-    /// None.
-    /// An optional oneshot sender can be used receive the result of attempting
-    /// to reorg to the new tip, on the corresponding oneshot receiver.
-    new_tip_ready_tx: UnboundedSender<NewTipReadyMessage>,
-    peer_info_rx: PeerInfoRx,
+pub struct NetTask {
+    pub forward_mainchain_task_request_tx: mpsc::Sender<ForwardMainchainTaskRequest>,
+    pub forward_mainchain_task_request_rx: mpsc::Receiver<ForwardMainchainTaskRequest>,
+    pub mainchain_task_response_rx: mpsc::Receiver<MainchainTaskResponse>,
+    pub new_tip_ready_rx: broadcast::Receiver<NewTipReady>,
+    pub new_tip_ready_tx: broadcast::Sender<NewTipReady>,
 }
 
 impl NetTask {
+    pub fn new(
+        forward_mainchain_task_request_tx: mpsc::Sender<ForwardMainchainTaskRequest>,
+        forward_mainchain_task_request_rx: mpsc::Receiver<ForwardMainchainTaskRequest>,
+        mainchain_task_response_rx: mpsc::Receiver<MainchainTaskResponse>,
+        new_tip_ready_rx: broadcast::Receiver<NewTipReady>,
+        new_tip_ready_tx: broadcast::Sender<NewTipReady>,
+    ) -> Self {
+        Self {
+            forward_mainchain_task_request_tx,
+            forward_mainchain_task_request_rx,
+            mainchain_task_response_rx,
+            new_tip_ready_rx,
+            new_tip_ready_tx,
+        }
+    }
+
     async fn handle_response(
         ctxt: &NetTaskContext,
         // Attempt to switch to a descendant tip once a body has been
@@ -1198,5 +1195,22 @@ impl Drop for NetTaskHandle {
             tracing::debug!("dropping net task handle, aborting task");
             task.abort()
         }
+    }
+}
+
+fn handle_request_response(
+    req: Request,
+    resp: ResponseMessage,
+) -> Result<(), Error> {
+    match (req, resp) {
+        (Request::GetAddr, ResponseMessage::Addr(message)) => {
+            // Handle received addr message
+            Ok(())
+        }
+        (Request::Addr(_), ResponseMessage::Empty) => {
+            // Handle addr message acknowledgment
+            Ok(())
+        }
+        _ => Err(Error::InvalidResponse),
     }
 }

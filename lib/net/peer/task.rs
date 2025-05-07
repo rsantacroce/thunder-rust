@@ -12,16 +12,19 @@ use quinn::SendStream;
 use sneed::EnvError;
 
 use crate::{
+    node::mainchain_task::{
+        AuthorizedTransaction, BlockHash, BmmResult, Header, Tip, VERSION,
+        Block, Txid,
+    },
+    net::peer_management::AddrMan,
+    net::peer_message::{AddrMessage, Request, ResponseMessage},
     net::peer::{
         BanReason, Connection, ConnectionContext, Info, PeerState, PeerStateId,
-        Request, TipInfo,
+        TipInfo,
         error::Error,
         mailbox::{self, InternalMessage, MailboxItem},
         message::{self, Heartbeat, RequestMessage, ResponseMessage},
         request_queue,
-    },
-    types::{
-        AuthorizedTransaction, BlockHash, BmmResult, Header, Tip, VERSION,
     },
 };
 
@@ -589,7 +592,7 @@ impl ConnectionTask {
         };
         let resp = match (header, body) {
             (Some(header), Some(body)) => {
-                ResponseMessage::Block { header, body }
+                ResponseMessage::Block(Block { header, body })
             }
             (_, _) => ResponseMessage::NoBlock { block_hash },
         };
@@ -639,7 +642,7 @@ impl ConnectionTask {
             Err(err) => {
                 Connection::send_response(
                     response_tx,
-                    ResponseMessage::TransactionRejected(txid),
+                    ResponseMessage::TransactionRejected(err.to_string()),
                 )
                 .await?;
                 Err(Error::from(err))
@@ -658,12 +661,26 @@ impl ConnectionTask {
         }
     }
 
+    async fn handle_get_addr(ctxt: &ConnectionContext) -> Result<ResponseMessage, Error> {
+        let mut addrman = ctxt.state.addrman.write();
+        let addresses = addrman.get_random_peers(10);
+        let response = ResponseMessage::Addr(AddrMessage::from(addresses));
+        Ok(response)
+    }
+
+    async fn handle_addr(ctxt: &ConnectionContext, message: AddrMessage) -> Result<ResponseMessage, Error> {
+        let mut addrman = ctxt.state.addrman.write();
+        for peer_info in message.addresses {
+            addrman.add_peer(peer_info);
+        }
+        Ok(ResponseMessage::Empty)
+    }
+
     async fn handle_peer_request(
         ctxt: &ConnectionContext,
         info_tx: &mpsc::UnboundedSender<Info>,
         request_queue: &mut request_queue::Sender,
         peer_state: &mut Option<PeerStateId>,
-        // Map associating peer state hashes to peer state
         peer_states: &mut HashMap<PeerStateId, PeerState>,
         response_tx: SendStream,
         request_msg: RequestMessage,
@@ -706,6 +723,14 @@ impl ConnectionTask {
             )) => {
                 Self::handle_push_tx(ctxt, info_tx, response_tx, transaction)
                     .await
+            }
+            RequestMessage::Request(Request::GetAddr) => {
+                Self::handle_get_addr(ctxt).await?;
+                Ok(())
+            }
+            RequestMessage::Request(Request::Addr(message)) => {
+                Self::handle_addr(ctxt, message).await?;
+                Ok(())
             }
         }
     }

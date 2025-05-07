@@ -1,6 +1,7 @@
 //! Request queue that handles rate limiting and deduplication
 
 use std::{collections::HashSet, num::NonZeroU32, sync::Arc};
+use std::collections::VecDeque;
 
 use futures::{Stream, StreamExt, channel::mpsc, stream};
 use governor::{DefaultDirectRateLimiter, Quota};
@@ -24,6 +25,8 @@ const fn request_cost(req: &Request) -> NonZeroU32 {
         Request::GetBlock { .. } => NonZeroU32::new(1000).unwrap(),
         Request::GetHeaders { .. } => NonZeroU32::new(10_000).unwrap(),
         Request::PushTransaction { .. } => NonZeroU32::new(10).unwrap(),
+        Request::GetAddr => NonZeroU32::new(1).unwrap(),
+        Request::Addr(_) => NonZeroU32::new(1).unwrap(),
     }
 }
 
@@ -180,4 +183,46 @@ pub fn new() -> (Sender, ErrorRx) {
         rate_limiter: Arc::new(rate_limiter),
     };
     (sender, error_rx)
+}
+
+pub struct RequestQueue {
+    queue: VecDeque<Request>,
+}
+
+impl RequestQueue {
+    pub fn new() -> Self {
+        Self {
+            queue: VecDeque::new(),
+        }
+    }
+
+    pub fn push(&mut self, request: Request) {
+        self.queue.push_back(request);
+    }
+
+    pub fn pop(&mut self) -> Option<Request> {
+        self.queue.pop_front()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.queue.len()
+    }
+
+    pub fn clear(&mut self) {
+        self.queue.clear();
+    }
+
+    pub fn get_priority(&self, req: &Request) -> NonZeroU32 {
+        match req {
+            Request::GetBlock { .. } => NonZeroU32::new(1).unwrap(),
+            Request::GetHeaders { .. } => NonZeroU32::new(2).unwrap(),
+            Request::PushTransaction { .. } => NonZeroU32::new(10).unwrap(),
+            Request::GetAddr => NonZeroU32::new(5).unwrap(),
+            Request::Addr(_) => NonZeroU32::new(5).unwrap(),
+        }
+    }
 }

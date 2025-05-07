@@ -1,13 +1,14 @@
 //! P2P message types
 
-use std::{collections::HashSet, num::NonZeroUsize};
+use std::{collections::HashSet, num::NonZeroUsize, net::SocketAddr};
 
-use borsh::BorshSerialize;
+use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     net::peer::{PeerState, PeerStateId},
-    types::{AuthorizedTransaction, BlockHash, Body, Header, Tip, Txid},
+    types::{AuthorizedTransaction, BlockHash, Body, Header, Tip, Txid, Block},
+    net::peer_management::{PeerInfo, PeerServices},
 };
 
 #[derive(BorshSerialize, Clone, Debug, Deserialize, Serialize)]
@@ -89,21 +90,39 @@ impl PushTransactionRequest {
     }
 }
 
+/// Message containing a list of peer addresses
+#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Serialize, Deserialize)]
+pub struct AddrMessage {
+    /// List of peer addresses with their services
+    pub addresses: Vec<PeerInfo>,
+}
+
+impl From<Vec<PeerInfo>> for AddrMessage {
+    fn from(addresses: Vec<PeerInfo>) -> Self {
+        Self { addresses }
+    }
+}
+
 #[derive(BorshSerialize, Clone, Debug)]
 pub enum Request {
     GetBlock(GetBlockRequest),
     GetHeaders(GetHeadersRequest),
     PushTransaction(PushTransactionRequest),
+    /// Request to send peer addresses
+    GetAddr,
+    /// Message containing peer addresses
+    Addr(AddrMessage),
 }
 
 impl Request {
     /// Limit bytes to read in a response to a request
     pub const fn read_response_limit(&self) -> NonZeroUsize {
-        // TODO: Add constant for discriminant
         match self {
             Self::GetBlock(request) => request.read_response_limit(),
             Self::GetHeaders(request) => request.read_response_limit(),
             Self::PushTransaction(request) => request.read_response_limit(),
+            Self::GetAddr => NonZeroUsize::new(1).unwrap(),
+            Self::Addr(_) => NonZeroUsize::new(1).unwrap(),
         }
     }
 }
@@ -123,6 +142,12 @@ impl From<GetHeadersRequest> for Request {
 impl From<PushTransactionRequest> for Request {
     fn from(request: PushTransactionRequest) -> Self {
         Self::PushTransaction(request)
+    }
+}
+
+impl From<AddrMessage> for Request {
+    fn from(message: AddrMessage) -> Self {
+        Self::Addr(message)
     }
 }
 
@@ -167,6 +192,8 @@ impl<'a> Serialize for RequestMessageRef<'a> {
             GetBlock(&'b GetBlockRequest),
             GetHeaders(&'b GetHeadersRequest),
             PushTransaction(&'b PushTransactionRequest),
+            GetAddr,
+            Addr(&'b AddrMessage),
         }
 
         let repr = match self {
@@ -179,6 +206,8 @@ impl<'a> Serialize for RequestMessageRef<'a> {
                 Request::PushTransaction(request) => {
                     Repr::PushTransaction(request)
                 }
+                Request::GetAddr => Repr::GetAddr,
+                Request::Addr(message) => Repr::Addr(message),
             },
         };
         repr.serialize(serializer)
@@ -190,7 +219,8 @@ impl<'a> Serialize for RequestMessageRef<'a> {
 #[transitive(
     from(GetBlockRequest, Request),
     from(GetHeadersRequest, Request),
-    from(PushTransactionRequest, Request)
+    from(PushTransactionRequest, Request),
+    from(AddrMessage, Request)
 )]
 pub enum RequestMessage {
     Heartbeat(Heartbeat),
@@ -237,46 +267,75 @@ impl<'de> Deserialize<'de> for RequestMessage {
             GetBlock(GetBlockRequest),
             GetHeaders(GetHeadersRequest),
             PushTransaction(PushTransactionRequest),
+            GetAddr,
+            Addr(AddrMessage),
         }
         let res = match Repr::deserialize(deserializer)? {
             Repr::Heartbeat(heartbeat) => heartbeat.into(),
             Repr::GetBlock(request) => request.into(),
             Repr::GetHeaders(request) => request.into(),
             Repr::PushTransaction(request) => request.into(),
+            Repr::GetAddr => Request::GetAddr.into(),
+            Repr::Addr(message) => message.into(),
         };
         Ok(res)
     }
 }
 
-#[derive(educe::Educe, Serialize, Deserialize)]
-#[educe(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ResponseMessage {
-    Block {
-        header: Header,
-        body: Body,
-    },
-    /// Headers, from start to end
-    Headers(#[educe(Debug(method(ResponseMessage::fmt_headers)))] Vec<Header>),
-    NoBlock {
-        block_hash: BlockHash,
-    },
-    NoHeader {
-        block_hash: BlockHash,
-    },
+    Block(Block),
+    Headers(Vec<Header>),
     TransactionAccepted(Txid),
-    TransactionRejected(Txid),
+    TransactionRejected(String),
+    Addr(AddrMessage),
+    Empty,
+    NoBlock { block_hash: BlockHash },
+    NoHeader { block_hash: BlockHash },
 }
 
 impl ResponseMessage {
-    /// Format headers for `Debug` impl
-    fn fmt_headers(
-        headers: &Vec<Header>,
-        f: &mut std::fmt::Formatter<'_>,
-    ) -> std::fmt::Result {
+    fn fmt_headers(headers: &Vec<Header>, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let [first, .., last] = headers.as_slice() {
             write!(f, "[{first:?}, .., {last:?}]")
         } else {
             std::fmt::Debug::fmt(headers, f)
         }
+    }
+}
+
+impl From<Block> for ResponseMessage {
+    fn from(block: Block) -> Self {
+        Self::Block(block)
+    }
+}
+
+impl From<Vec<Header>> for ResponseMessage {
+    fn from(headers: Vec<Header>) -> Self {
+        Self::Headers(headers)
+    }
+}
+
+impl From<Txid> for ResponseMessage {
+    fn from(txid: Txid) -> Self {
+        Self::TransactionAccepted(txid)
+    }
+}
+
+impl From<String> for ResponseMessage {
+    fn from(reason: String) -> Self {
+        Self::TransactionRejected(reason)
+    }
+}
+
+impl From<AddrMessage> for ResponseMessage {
+    fn from(message: AddrMessage) -> Self {
+        Self::Addr(message)
+    }
+}
+
+impl From<()> for ResponseMessage {
+    fn from(_: ()) -> Self {
+        Self::Empty
     }
 }

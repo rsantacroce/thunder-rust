@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet, hash_map},
     net::SocketAddr,
     sync::Arc,
+    time::Duration,
 };
 
 use fallible_iterator::FallibleIterator;
@@ -12,6 +13,7 @@ use quinn::{ClientConfig, Endpoint, ServerConfig};
 use sneed::{
     DatabaseUnique, EnvError, RwTxnError, UnitKey, db::error::Error as DbError,
 };
+use tokio::{spawn, time::interval};
 use tokio_stream::StreamNotifyClose;
 use tracing::instrument;
 
@@ -22,8 +24,8 @@ use crate::{
 };
 
 pub mod error;
-mod peer;
-mod peer_management;
+pub mod peer;
+pub mod peer_management;
 
 pub use error::Error;
 pub(crate) use peer::error::mailbox::Error as PeerConnectionMailboxError;
@@ -559,5 +561,34 @@ impl Net {
         let mut peer_info = PeerInfo::new(addr, source);
         peer_info.update_last_try();
         addrman.add_peer(peer_info);
+    }
+
+    /// Start periodic addr message broadcasting
+    pub fn start_addr_broadcast(&self) {
+        let net = self.clone();
+        spawn(async move {
+            let mut interval = interval(Duration::from_secs(600)); // Broadcast every 10 minutes
+            loop {
+                interval.tick().await;
+                net.broadcast_addr_message().await;
+            }
+        });
+    }
+
+    /// Broadcast addr message to all connected peers
+    async fn broadcast_addr_message(&self) {
+        let mut addrman = self.addrman.write();
+        let addresses = addrman.get_random_peers(10);
+        let message = peer_message::AddrMessage::from(addresses.into_iter().cloned().collect::<Vec<_>>());
+        
+        let active_peers = self.active_peers.read();
+        for (addr, _) in active_peers.iter() {
+            if let Err(e) = self.push_internal_message(
+                peer_message::Request::Addr(message.clone()).into(),
+                *addr,
+            ) {
+                tracing::warn!("Failed to push addr message to peer {}: {}", addr, e);
+            }
+        }
     }
 }

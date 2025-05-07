@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use parking_lot::RwLock;
 
 use fallible_iterator::FallibleIterator;
 use futures::Stream;
@@ -22,6 +23,7 @@ use crate::{
         WithdrawalBundleStatus, proto::mainchain::TwoWayPegData,
     },
     util::Watchable,
+    net::peer_management::AddrMan,
 };
 
 mod block;
@@ -91,6 +93,7 @@ pub struct State {
     >,
     pub utreexo_accumulator: DatabaseUnique<UnitKey, SerdeBincode<Accumulator>>,
     _version: DatabaseUnique<UnitKey, SerdeBincode<Version>>,
+    pub addrman: RwLock<AddrMan>,
 }
 
 impl State {
@@ -144,6 +147,7 @@ impl State {
                 .put(&mut rwtxn, &(), &*VERSION)
                 .map_err(DbError::from)?;
         }
+        let addrman = RwLock::new(AddrMan::new(100, 100));
         rwtxn.commit().map_err(RwTxnError::from)?;
         Ok(Self {
             tip,
@@ -157,6 +161,7 @@ impl State {
             withdrawal_bundle_event_blocks,
             utreexo_accumulator,
             _version: version,
+            addrman,
         })
     }
 
