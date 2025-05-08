@@ -780,7 +780,7 @@ impl NetTask {
                 PeerRequest::GetPeers(peer_message::GetPeersRequest),
                 PeerResponse::Peers(peers),
             ) => {
-                let _ = ctxt.net.handle_peers(peers.peers, addr, ctxt.env.clone());
+                drop(ctxt.net.handle_peers(peers.peers, addr, ctxt.env.clone()));
                 Ok(())
             }
             (
