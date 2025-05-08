@@ -17,7 +17,7 @@ use crate::{
         Request, TipInfo,
         error::Error,
         mailbox::{self, InternalMessage, MailboxItem},
-        message::{self, Heartbeat, RequestMessage, ResponseMessage},
+        message::{self, Heartbeat, RequestMessage, ResponseMessage, GetPeersResponse},
         request_queue,
     },
     types::{
@@ -706,6 +706,22 @@ impl ConnectionTask {
             )) => {
                 Self::handle_push_tx(ctxt, info_tx, response_tx, transaction)
                     .await
+            }
+            RequestMessage::Request(Request::GetPeers(_)) => {
+                // TODO: Implement peer exchange response
+                let response = ResponseMessage::Peers(GetPeersResponse {
+                    peers: Vec::new(),
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                });
+                Connection::send_response(response_tx, response).await?;
+                Ok(())
+            }
+            RequestMessage::Request(Request::Peers(_)) => {
+                // TODO: Handle received peers
+                Ok(())
             }
         }
     }

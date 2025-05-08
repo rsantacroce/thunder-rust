@@ -780,7 +780,7 @@ impl NetTask {
                 PeerRequest::GetPeers(peer_message::GetPeersRequest),
                 PeerResponse::Peers(peers),
             ) => {
-                let _ = ctxt.net.handle_peers(peers.peers, addr, ctxt.env);
+                let _ = ctxt.net.handle_peers(peers.peers, addr, ctxt.env.clone());
                 Ok(())
             }
             (
@@ -799,7 +799,11 @@ impl NetTask {
                 tracing::warn!(%addr, ?req, ?resp,"Invalid response from peer");
                 let () = ctxt.net.remove_active_peer(addr);
                 Ok(())
-            }   
+            },
+            (PeerRequest::Peers(_), _) | (PeerRequest::GetPeers(_), _) => {
+                // Ignore unsolicited peer lists and invalid responses to GetPeers
+                Ok(())
+            }
         }
     }
 
