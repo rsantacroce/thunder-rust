@@ -76,6 +76,16 @@ impl GetHeadersRequest {
     }
 }
 
+// New message types for PEX
+#[derive(BorshSerialize, Clone, Debug, Deserialize, Serialize)]
+pub struct GetPeersRequest;
+
+#[derive(BorshSerialize, Clone, Debug, Deserialize, Serialize)]
+pub struct GetPeersResponse {
+    pub peers: Vec<std::net::SocketAddr>,
+    pub timestamp: u64, // To prevent replay attacks
+}
+
 #[derive(BorshSerialize, Clone, Debug, Deserialize, Serialize)]
 pub struct PushTransactionRequest {
     pub transaction: AuthorizedTransaction,
@@ -94,6 +104,8 @@ pub enum Request {
     GetBlock(GetBlockRequest),
     GetHeaders(GetHeadersRequest),
     PushTransaction(PushTransactionRequest),
+    GetPeers(GetPeersRequest),
+    Peers(GetPeersResponse),
 }
 
 impl Request {
@@ -104,6 +116,8 @@ impl Request {
             Self::GetBlock(request) => request.read_response_limit(),
             Self::GetHeaders(request) => request.read_response_limit(),
             Self::PushTransaction(request) => request.read_response_limit(),
+            Self::GetPeers(_) => NonZeroUsize::new(1024).unwrap(),
+            Self::Peers(_) => NonZeroUsize::new(1024).unwrap(),
         }
     }
 }
@@ -167,6 +181,8 @@ impl<'a> Serialize for RequestMessageRef<'a> {
             GetBlock(&'b GetBlockRequest),
             GetHeaders(&'b GetHeadersRequest),
             PushTransaction(&'b PushTransactionRequest),
+            GetPeers(&'b GetPeersRequest),
+            Peers(&'b GetPeersResponse),
         }
 
         let repr = match self {
@@ -179,6 +195,8 @@ impl<'a> Serialize for RequestMessageRef<'a> {
                 Request::PushTransaction(request) => {
                     Repr::PushTransaction(request)
                 }
+                Request::GetPeers(request) => Repr::GetPeers(request),
+                Request::Peers(response) => Repr::Peers(response),
             },
         };
         repr.serialize(serializer)
@@ -265,6 +283,7 @@ pub enum ResponseMessage {
     },
     TransactionAccepted(Txid),
     TransactionRejected(Txid),
+    Peers(GetPeersResponse),
 }
 
 impl ResponseMessage {

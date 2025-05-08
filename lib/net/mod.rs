@@ -2,8 +2,13 @@ use std::{
     collections::{HashMap, HashSet, hash_map},
     net::SocketAddr,
     sync::Arc,
+    time::Duration,
 };
 
+use bitcoin::key::rand::{
+    self,
+    seq::{IteratorRandom, SliceRandom},
+};
 use fallible_iterator::FallibleIterator;
 use futures::{StreamExt, channel::mpsc};
 use heed::types::{SerdeBincode, Unit};
@@ -36,6 +41,8 @@ pub use peer::{
     PeerStateId, Request as PeerRequest, ResponseMessage as PeerResponse,
     message as peer_message,
 };
+
+use self::peer_message::GetPeersRequest;
 
 /// Dummy certificate verifier that treats any certificate as valid.
 /// NOTE, such verification is vulnerable to MITM attacks, but convenient for testing.
@@ -298,6 +305,7 @@ impl Net {
                 let known_peers =
                     DatabaseUnique::create(env, &mut rwtxn, "known_peers")
                         .map_err(EnvError::from)?;
+                // TODO let's fetch from the dns seeds some addresses and add here it should be refreshed every 10 minutes
                 const SEED_NODE_ADDR: SocketAddr = SocketAddr::new(
                     std::net::IpAddr::V4(std::net::Ipv4Addr::new(
                         172, 105, 148, 135,
@@ -507,4 +515,117 @@ impl Net {
                 }
             })
     }
+
+    // Request peers from a specific peer
+    pub fn request_peers(&self, addr: SocketAddr) -> bool {
+        let request = PeerRequest::GetPeers(GetPeersRequest);
+        self.push_internal_message(request.into(), addr)
+    }
+
+    // Handle incoming peer list
+    pub fn handle_peers(
+        &self,
+        peers: Vec<SocketAddr>,
+        source: SocketAddr,
+        env: sneed::Env,
+    ) -> Result<(), Error> {
+        let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
+
+        const MAX_PEERS: usize = 10;
+        for peer_addr in peers {
+            // Skip if it's the source peer or ourselves
+            if peer_addr == source || peer_addr == self.server.local_addr()? {
+                continue;
+            }
+
+            // Add to known_peers if not already present
+            if !self
+                .known_peers
+                .contains_key(&rwtxn, &peer_addr)
+                .map_err(DbError::from)?
+            {
+                self.known_peers
+                    .put(&mut rwtxn, &peer_addr, &())
+                    .map_err(DbError::from)?;
+
+                // Optionally connect to the new peer
+                if self.active_peers.read().len() < MAX_PEERS {
+                    self.connect_peer(env.clone(), peer_addr)?;
+                }
+            }
+        }
+
+        rwtxn.commit().map_err(RwTxnError::from)?;
+        Ok(())
+    }
+
+    pub fn start_pex(&self, config: PexConfig) -> Result<(), Error> {
+        let net = self.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(config.pex_interval);
+            loop {
+                interval.tick().await;
+
+                // Only request peers if we're below min_peers
+                if net.active_peers.read().len() < config.min_peers {
+                    // Request peers from random subset of connected peers
+                    let active_peers = net.get_active_peers();
+                    let mut rng = rand::thread_rng();
+                    for peer in active_peers
+                        .choose_multiple(&mut rng, config.max_peers_per_request)
+                    {
+                        if !net.request_peers(peer.address) {
+                            tracing::warn!(
+                                "Failed to request peers from {}",
+                                peer.address
+                            );
+                        }
+                    }
+                }
+            }
+        });
+        Ok(())
+    }
+
+    fn select_peers_to_share(
+        &self,
+        max_peers: usize,
+        env: sneed::Env,
+    ) -> Result<Vec<SocketAddr>, Error> {
+        let rotxn = env.read_txn().map_err(EnvError::from)?;
+        let known_peers: Vec<_> = self
+            .known_peers
+            .iter(&rotxn)
+            .map_err(DbError::from)?
+            .collect()
+            .map_err(DbError::from)?;
+
+        // Filter out active peers and select random subset
+        let mut rng = rand::thread_rng();
+        let selected_peers: Vec<SocketAddr> = known_peers
+            .into_iter()
+            .filter(|(addr, _)| !self.active_peers.read().contains_key(addr))
+            .map(|(addr, _)| addr)
+            .choose_multiple(&mut rng, max_peers)
+            .into_iter()
+            .collect();
+
+        Ok(selected_peers)
+    }
+
+    fn validate_peer_list(&self, peers: &[SocketAddr]) -> bool {
+        // Validate peer addresses
+        peers.iter().all(|addr| {
+            // Check for private/local addresses
+            addr.is_ipv4()
+        })
+    }
+}
+
+
+pub struct PexConfig {
+    pub max_peers: usize,
+    pub min_peers: usize,
+    pub pex_interval: Duration,
+    pub max_peers_per_request: usize,
 }

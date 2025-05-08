@@ -777,6 +777,13 @@ impl NetTask {
                 PeerResponse::TransactionAccepted(_),
             ) => Ok(()),
             (
+                PeerRequest::GetPeers(peer_message::GetPeersRequest),
+                PeerResponse::Peers(peers),
+            ) => {
+                let _ = ctxt.net.handle_peers(peers.peers, addr, ctxt.env);
+                Ok(())
+            }
+            (
                 PeerRequest::PushTransaction(
                     peer_message::PushTransactionRequest { transaction: _ },
                 ),
@@ -792,7 +799,7 @@ impl NetTask {
                 tracing::warn!(%addr, ?req, ?resp,"Invalid response from peer");
                 let () = ctxt.net.remove_active_peer(addr);
                 Ok(())
-            }
+            }   
         }
     }
 

@@ -24,6 +24,8 @@ const fn request_cost(req: &Request) -> NonZeroU32 {
         Request::GetBlock { .. } => NonZeroU32::new(1000).unwrap(),
         Request::GetHeaders { .. } => NonZeroU32::new(10_000).unwrap(),
         Request::PushTransaction { .. } => NonZeroU32::new(10).unwrap(),
+        Request::GetPeers { .. } => NonZeroU32::new(1000).unwrap(),
+        Request::Peers { .. } => NonZeroU32::new(1000).unwrap(),
     }
 }
 
